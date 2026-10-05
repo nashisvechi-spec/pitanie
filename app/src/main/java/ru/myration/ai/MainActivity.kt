@@ -18,12 +18,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -46,20 +43,23 @@ import javax.crypto.spec.GCMParameterSpec
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme { App() } }
+        setContent { MaterialTheme(colorScheme = lightColorScheme()) { App() } }
     }
 }
 
 enum class ScanMode(val title: String) { FOOD("Еда"), FRIDGE("Холодильник") }
-data class DetectedItem(val name: String, val grams: Int?, val confidence: Double?)
+enum class Goal(val title: String) { LOSE("Снизить вес"), MAINTAIN("Поддерживать"), GAIN("Набрать вес") }
+data class DetectedItem(val name: String, val grams: Int?, val calories: Int?, val protein: Int?, val fat: Int?, val carbs: Int?, val confidence: Double?)
+data class DiaryEntry(val title: String, val calories: Int, val protein: Int, val fat: Int, val carbs: Int)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun App() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
+    var tab by remember { mutableIntStateOf(0) }
     var mode by remember { mutableStateOf(ScanMode.FOOD) }
-    var status by remember { mutableStateOf("Готово к распознаванию") }
+    var status by remember { mutableStateOf("Сфотографируй еду — AI поможет оценить состав и КБЖУ") }
     var loading by remember { mutableStateOf(false) }
     var items by remember { mutableStateOf<List<DetectedItem>>(emptyList()) }
     var rawNote by remember { mutableStateOf("") }
@@ -67,205 +67,91 @@ fun App() {
     var showSettings by remember { mutableStateOf(false) }
     var apiKeyDraft by remember { mutableStateOf("") }
     var keySaved by remember { mutableStateOf(SecureKeyStore.hasKey(context)) }
+    var goal by remember { mutableStateOf(Goal.MAINTAIN) }
+    var dailyTarget by remember { mutableIntStateOf(2000) }
+    var diary by remember { mutableStateOf<List<DiaryEntry>>(emptyList()) }
 
     fun analyze(uri: Uri) {
         val apiKey = SecureKeyStore.load(context)
-        if (apiKey.isNullOrBlank()) {
-            status = "API-ключ не задан. Открой «Настройки AI» и вставь ключ."
-            showSettings = true
-            return
-        }
-        loading = true; items = emptyList(); rawNote = ""; status = "Распознаю…"
+        if (apiKey.isNullOrBlank()) { status = "Сначала добавь API-ключ в настройках AI."; showSettings = true; tab = 2; return }
+        loading = true; items = emptyList(); rawNote = ""; status = "AI анализирует фотографию…"
         scope.launch {
             runCatching { OpenAiVision.analyze(context, uri, mode, apiKey) }
-                .onSuccess { r -> items = r.first; rawNote = r.second; status = "Проверь результат — распознавание и порции приблизительные." }
+                .onSuccess { r -> items = r.first; rawNote = r.second; status = "Готово. Проверь продукты и порции перед добавлением." }
                 .onFailure { e -> status = "Ошибка: ${e.message ?: "неизвестная ошибка"}" }
             loading = false
         }
     }
 
-    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let(::analyze) }
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let(::analyze) }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok -> if (ok) cameraUri?.let(::analyze) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) {
-            cameraUri = createTempImageUri(context)
-            camera.launch(cameraUri!!)
-        } else status = "Без разрешения камеры можно выбрать фото из галереи."
+        if (granted) { cameraUri = createTempImageUri(context); camera.launch(cameraUri!!) } else status = "Без камеры можно выбрать фото из галереи."
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Мой рацион AI") }) }) { pad ->
-        LazyColumn(Modifier.padding(pad).padding(16.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item {
-                Text("Личная тестовая сборка", style = MaterialTheme.typography.titleLarge)
-                Text("Фото отправляется напрямую в OpenAI API. Не публикуй APK с личным API-ключом.")
+    Scaffold(
+        topBar = { TopAppBar(title = { Text("Мой рацион AI") }, actions = { IconButton(onClick = { tab = 2; showSettings = true }) { Icon(Icons.Default.Settings, "Настройки") } }) },
+        bottomBar = { NavigationBar {
+            NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Icon(Icons.Default.Home, null) }, label = { Text("Сегодня") })
+            NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, icon = { Icon(Icons.Default.CameraAlt, null) }, label = { Text("AI-скан") })
+            NavigationBarItem(selected = tab == 2, onClick = { tab = 2 }, icon = { Icon(Icons.Default.Person, null) }, label = { Text("Профиль") })
+        }}
+    ) { pad ->
+        when (tab) {
+            0 -> LazyColumn(Modifier.padding(pad).padding(16.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item { Text("Сегодня", style = MaterialTheme.typography.headlineMedium); Text("Цель: ${goal.title}") }
+                val eaten = diary.sumOf { it.calories }
+                item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp)) { Text("$eaten / $dailyTarget ккал", style = MaterialTheme.typography.headlineSmall); LinearProgressIndicator(progress = { (eaten.toFloat()/dailyTarget).coerceIn(0f,1f) }, modifier = Modifier.fillMaxWidth()); Text("Осталось примерно ${(dailyTarget-eaten).coerceAtLeast(0)} ккал") } } }
+                item { Button(onClick = { tab = 1 }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("Распознать еду по фото") } }
+                item { Text("Дневник", style = MaterialTheme.typography.titleLarge) }
+                if (diary.isEmpty()) item { Text("Пока пусто. Добавь первый приём пищи через AI-скан.") }
+                items(diary) { d -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) { Text(d.title, style = MaterialTheme.typography.titleMedium); Text("${d.calories} ккал · Б ${d.protein} · Ж ${d.fat} · У ${d.carbs} г") } } }
             }
-            item {
-                OutlinedButton(onClick = { showSettings = !showSettings }, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.Settings, null); Spacer(Modifier.width(8.dp)); Text("Настройки AI · ${if (keySaved) "ключ сохранён" else "ключ не задан"}")
-                }
+            1 -> LazyColumn(Modifier.padding(pad).padding(16.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item { Text("AI-распознавание", style = MaterialTheme.typography.headlineSmall); Text("Фото помогает оценить продукты, порцию и КБЖУ. Все значения приблизительные.") }
+                item { SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) { ScanMode.entries.forEachIndexed { i,m -> SegmentedButton(selected = mode==m, onClick={mode=m}, shape=SegmentedButtonDefaults.itemShape(i,ScanMode.entries.size)){Text(m.title)} } } }
+                item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED) { cameraUri=createTempImageUri(context); camera.launch(cameraUri!!) } else permission.launch(Manifest.permission.CAMERA) }, modifier=Modifier.weight(1f)){Icon(Icons.Default.CameraAlt,null);Spacer(Modifier.width(6.dp));Text("Камера")}
+                    OutlinedButton(onClick={gallery.launch("image/*")},modifier=Modifier.weight(1f)){Icon(Icons.Default.Image,null);Spacer(Modifier.width(6.dp));Text("Галерея")}
+                } }
+                item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { if(loading) LinearProgressIndicator(Modifier.fillMaxWidth()); Text(status) } } }
+                items(items) { x -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) { Text(x.name, style=MaterialTheme.typography.titleMedium); Text(listOfNotNull(x.grams?.let{"~$it г"},x.calories?.let{"$it ккал"},x.confidence?.let{"уверенность ${(it*100).toInt()}%"}).joinToString(" · ")); if(x.calories!=null) Text("Б ${x.protein?:0} · Ж ${x.fat?:0} · У ${x.carbs?:0} г") } } }
+                if (items.isNotEmpty() && mode==ScanMode.FOOD) item { Button(onClick={ val c=items.sumOf{it.calories?:0}; val p=items.sumOf{it.protein?:0}; val f=items.sumOf{it.fat?:0}; val carb=items.sumOf{it.carbs?:0}; diary=diary+DiaryEntry(items.joinToString(", "){it.name}.take(60),c,p,f,carb); status="Добавлено в дневник"; tab=0 },modifier=Modifier.fillMaxWidth()){Icon(Icons.Default.Add,null);Spacer(Modifier.width(6.dp));Text("Добавить в дневник") } }
+                if(rawNote.isNotBlank()) item { Text(rawNote, style=MaterialTheme.typography.bodySmall) }
             }
-            if (showSettings) item {
-                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("OpenAI API key", style = MaterialTheme.typography.titleMedium)
-                    OutlinedTextField(value = apiKeyDraft, onValueChange = { apiKeyDraft = it.trim() }, label = { Text("Вставь API-ключ") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    Text("Ключ сохраняется только на этом телефоне в зашифрованном виде и не добавляется в GitHub.", style = MaterialTheme.typography.bodySmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = {
-                            if (apiKeyDraft.isNotBlank()) { SecureKeyStore.save(context, apiKeyDraft); apiKeyDraft = ""; keySaved = true; status = "API-ключ сохранён."; showSettings = false }
-                        }, enabled = apiKeyDraft.isNotBlank()) { Text("Сохранить") }
-                        OutlinedButton(onClick = { SecureKeyStore.delete(context); apiKeyDraft = ""; keySaved = false; status = "API-ключ удалён." }) { Text("Удалить") }
-                    }
-                }}
-            }
-            item {
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    ScanMode.entries.forEachIndexed { i, m ->
-                        SegmentedButton(selected = mode == m, onClick = { mode = m }, shape = SegmentedButtonDefaults.itemShape(i, ScanMode.entries.size)) { Text(m.title) }
-                    }
-                }
-            }
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = {
-                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                            cameraUri = createTempImageUri(context); camera.launch(cameraUri!!)
-                        } else permission.launch(Manifest.permission.CAMERA)
-                    }, modifier = Modifier.weight(1f)) { Icon(Icons.Default.CameraAlt, null); Spacer(Modifier.width(6.dp)); Text("Камера") }
-                    OutlinedButton(onClick = { gallery.launch("image/*") }, modifier = Modifier.weight(1f)) { Icon(Icons.Default.Image, null); Spacer(Modifier.width(6.dp)); Text("Галерея") }
-                }
-            }
-            item {
-                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
-                    if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Spacer(Modifier.height(6.dp)); Text(status)
-                }}
-            }
-            if (items.isNotEmpty()) {
-                item { Text(if (mode == ScanMode.FOOD) "Что найдено" else "Продукты в холодильнике", style = MaterialTheme.typography.titleMedium) }
-                items(items) { x ->
-                    Card(Modifier.fillMaxWidth()) { Row(Modifier.padding(14.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(x.name)
-                        Text(listOfNotNull(x.grams?.let { "~$it г" }, x.confidence?.let { "${(it*100).toInt()}%" }).joinToString(" · "))
-                    }}
-                }
-            }
-            if (rawNote.isNotBlank()) item { Text(rawNote, style = MaterialTheme.typography.bodySmall) }
-            item {
-                HorizontalDivider(); Spacer(Modifier.height(6.dp))
-                Text("Важно: модель может ошибаться и не может точно определить массу по одной фотографии. Перед сохранением результата проверяй продукты и порции.", style = MaterialTheme.typography.bodySmall)
+            else -> LazyColumn(Modifier.padding(pad).padding(16.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item { Text("Цель и настройки", style=MaterialTheme.typography.headlineSmall) }
+                item { Text("Выбери цель. Приложение не предлагает экстремальные ограничения — ориентир можно менять вручную.") }
+                item { Goal.entries.forEach { g -> FilterChip(selected=goal==g,onClick={goal=g;dailyTarget=when(g){Goal.LOSE->1800;Goal.MAINTAIN->2000;Goal.GAIN->2200}},label={Text(g.title)}); Spacer(Modifier.height(6.dp)) } }
+                item { OutlinedTextField(value=dailyTarget.toString(),onValueChange={it.toIntOrNull()?.let{v->dailyTarget=v.coerceIn(1200,4000)}},label={Text("Дневной ориентир, ккал")},modifier=Modifier.fillMaxWidth()) }
+                item { OutlinedButton(onClick={showSettings=!showSettings},modifier=Modifier.fillMaxWidth()){Icon(Icons.Default.Key,null);Spacer(Modifier.width(8.dp));Text("Настройки AI · ${if(keySaved)"ключ сохранён" else "ключ не задан"}") } }
+                if(showSettings) item { Card(Modifier.fillMaxWidth()){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){Text("OpenAI API key",style=MaterialTheme.typography.titleMedium);OutlinedTextField(value=apiKeyDraft,onValueChange={apiKeyDraft=it.trim()},label={Text("Вставь API-ключ")},singleLine=true,modifier=Modifier.fillMaxWidth());Text("Ключ шифруется Android Keystore и остаётся на телефоне.",style=MaterialTheme.typography.bodySmall);Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){Button(onClick={if(apiKeyDraft.isNotBlank()){SecureKeyStore.save(context,apiKeyDraft);apiKeyDraft="";keySaved=true;showSettings=false}},enabled=apiKeyDraft.isNotBlank()){Text("Сохранить")};OutlinedButton(onClick={SecureKeyStore.delete(context);keySaved=false;apiKeyDraft=""}){Text("Удалить")}}}} }
+                item { Text("Важно: распознавание еды и расчёт порций приблизительные. Для медицинских целей приложение не предназначено.",style=MaterialTheme.typography.bodySmall) }
             }
         }
     }
 }
 
-fun createTempImageUri(context: Context): Uri {
-    val dir = File(context.cacheDir, "images").apply { mkdirs() }
-    val file = File.createTempFile("meal_", ".jpg", dir)
-    return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-}
+fun createTempImageUri(context: Context): Uri { val dir=File(context.cacheDir,"images").apply{mkdirs()}; val file=File.createTempFile("meal_",".jpg",dir); return FileProvider.getUriForFile(context,"${context.packageName}.fileprovider",file) }
 
 object OpenAiVision {
     suspend fun analyze(context: Context, uri: Uri, mode: ScanMode, apiKey: String): Pair<List<DetectedItem>, String> = withContext(Dispatchers.IO) {
-        val base64 = imageAsBase64(context, uri)
-        val instruction = if (mode == ScanMode.FOOD)
-            "Определи видимые продукты/блюда на фото. Оцени граммы только приблизительно."
-        else "Определи видимые продукты в холодильнике. Для закрытых упаковок используй только то, что можно уверенно определить. Граммы можно не указывать."
-        val prompt = "$instruction Верни ТОЛЬКО JSON без markdown: {\"items\":[{\"name\":\"название по-русски\",\"grams\":120,\"confidence\":0.85}],\"note\":\"краткое замечание\"}. confidence от 0 до 1; если grams неизвестны, используй null. Не делай медицинских выводов и не оценивай внешность."
-        val body = JSONObject().apply {
-            put("model", "gpt-6-luna")
-            put("input", JSONArray().put(JSONObject().apply {
-                put("role", "user")
-                put("content", JSONArray()
-                    .put(JSONObject().put("type", "input_text").put("text", prompt))
-                    .put(JSONObject().put("type", "input_image").put("image_url", "data:image/jpeg;base64,$base64").put("detail", "low")))
-            }))
-            put("max_output_tokens", 900)
-        }
-        val conn = (URL("https://api.openai.com/v1/responses").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"; doOutput = true
-            setRequestProperty("Authorization", "Bearer $apiKey")
-            setRequestProperty("Content-Type", "application/json")
-            connectTimeout = 30_000; readTimeout = 60_000
-        }
-        conn.outputStream.use { it.write(body.toString().toByteArray()) }
-        val code = conn.responseCode
-        val text = (if (code in 200..299) conn.inputStream else conn.errorStream).bufferedReader().use { it.readText() }
-        if (code !in 200..299) throw IllegalStateException("OpenAI HTTP $code: ${text.take(250)}")
-        val response = JSONObject(text)
-        val outputText = extractOutputText(response)
-        val clean = outputText.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-        val parsed = JSONObject(clean)
-        val arr = parsed.optJSONArray("items") ?: JSONArray()
-        val found = buildList {
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                add(DetectedItem(o.optString("name", "Продукт"), if (o.isNull("grams")) null else o.optInt("grams"), if (o.isNull("confidence")) null else o.optDouble("confidence")))
-            }
-        }
-        found to parsed.optString("note", "")
+        val base64=imageAsBase64(context,uri)
+        val instruction=if(mode==ScanMode.FOOD) "Определи видимые блюда и продукты. Приблизительно оцени массу и КБЖУ каждого элемента." else "Определи видимые продукты в холодильнике. Не выдумывай содержимое закрытых непрозрачных упаковок."
+        val prompt="$instruction Верни ТОЛЬКО JSON: {\"items\":[{\"name\":\"название по-русски\",\"grams\":120,\"calories\":180,\"protein\":12,\"fat\":7,\"carbs\":18,\"confidence\":0.85}],\"note\":\"краткое замечание\"}. Если значение неизвестно — null. Не делай медицинских выводов, не оценивай тело или внешность."
+        val body=JSONObject().apply{put("model","gpt-6-luna");put("input",JSONArray().put(JSONObject().apply{put("role","user");put("content",JSONArray().put(JSONObject().put("type","input_text").put("text",prompt)).put(JSONObject().put("type","input_image").put("image_url","data:image/jpeg;base64,$base64").put("detail","low")))}));put("max_output_tokens",1200)}
+        val conn=(URL("https://api.openai.com/v1/responses").openConnection() as HttpURLConnection).apply{requestMethod="POST";doOutput=true;setRequestProperty("Authorization","Bearer $apiKey");setRequestProperty("Content-Type","application/json");connectTimeout=30_000;readTimeout=60_000}
+        conn.outputStream.use{it.write(body.toString().toByteArray())};val code=conn.responseCode;val text=(if(code in 200..299)conn.inputStream else conn.errorStream).bufferedReader().use{it.readText()};if(code !in 200..299) error("OpenAI HTTP $code: ${text.take(250)}")
+        val parsed=JSONObject(extractOutputText(JSONObject(text)).trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim());val arr=parsed.optJSONArray("items")?:JSONArray();val found=buildList{for(i in 0 until arr.length()){val o=arr.getJSONObject(i);fun oi(k:String)=if(o.isNull(k))null else o.optInt(k);add(DetectedItem(o.optString("name","Продукт"),oi("grams"),oi("calories"),oi("protein"),oi("fat"),oi("carbs"),if(o.isNull("confidence"))null else o.optDouble("confidence")))}};found to parsed.optString("note","")
     }
-
-    private fun extractOutputText(root: JSONObject): String {
-        val output = root.optJSONArray("output") ?: error("В ответе нет output")
-        for (i in 0 until output.length()) {
-            val content = output.optJSONObject(i)?.optJSONArray("content") ?: continue
-            for (j in 0 until content.length()) {
-                val c = content.optJSONObject(j) ?: continue
-                if (c.optString("type") == "output_text") return c.optString("text")
-            }
-        }
-        error("Модель не вернула текстовый результат")
-    }
-
-    private fun imageAsBase64(context: Context, uri: Uri): String {
-        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("Не удалось открыть изображение")
-        val original = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: error("Неверный формат изображения")
-        val maxSide = 1280
-        val scale = minOf(1f, maxSide.toFloat() / maxOf(original.width, original.height))
-        val bitmap = if (scale < 1f) Bitmap.createScaledBitmap(original, (original.width*scale).toInt(), (original.height*scale).toInt(), true) else original
-        val out = ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.JPEG, 78, out)
-        if (bitmap !== original) bitmap.recycle(); original.recycle()
-        return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
-    }
+    private fun extractOutputText(root:JSONObject):String{val output=root.optJSONArray("output")?:error("В ответе нет output");for(i in 0 until output.length()){val content=output.optJSONObject(i)?.optJSONArray("content")?:continue;for(j in 0 until content.length()){val c=content.optJSONObject(j)?:continue;if(c.optString("type")=="output_text")return c.optString("text")}};error("Модель не вернула результат")}
+    private fun imageAsBase64(context:Context,uri:Uri):String{val bytes=context.contentResolver.openInputStream(uri)?.use{it.readBytes()}?:error("Не удалось открыть изображение");val original=BitmapFactory.decodeByteArray(bytes,0,bytes.size)?:error("Неверный формат");val scale=minOf(1f,1280f/maxOf(original.width,original.height));val bitmap=if(scale<1f)Bitmap.createScaledBitmap(original,(original.width*scale).toInt(),(original.height*scale).toInt(),true) else original;val out=ByteArrayOutputStream();bitmap.compress(Bitmap.CompressFormat.JPEG,78,out);if(bitmap!==original)bitmap.recycle();original.recycle();return Base64.encodeToString(out.toByteArray(),Base64.NO_WRAP)}
 }
 
-
 object SecureKeyStore {
-    private const val ANDROID_KEYSTORE = "AndroidKeyStore"
-    private const val ALIAS = "myration_openai_key"
-    private const val PREFS = "secure_ai_settings"
-    private const val CIPHER_TEXT = "api_key_cipher"
-    private const val IV = "api_key_iv"
-
-    private fun secretKey(): SecretKey {
-        val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        (ks.getKey(ALIAS, null) as? SecretKey)?.let { return it }
-        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
-        generator.init(KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-            .build())
-        return generator.generateKey()
-    }
-
-    fun save(context: Context, value: String) {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey())
-        val encrypted = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString(CIPHER_TEXT, Base64.encodeToString(encrypted, Base64.NO_WRAP))
-            .putString(IV, Base64.encodeToString(cipher.iv, Base64.NO_WRAP)).apply()
-    }
-
-    fun load(context: Context): String? = runCatching {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val enc = prefs.getString(CIPHER_TEXT, null) ?: return null
-        val iv = prefs.getString(IV, null) ?: return null
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)))
-        String(cipher.doFinal(Base64.decode(enc, Base64.NO_WRAP)), Charsets.UTF_8)
-    }.getOrNull()
-
-    fun hasKey(context: Context) = !load(context).isNullOrBlank()
-    fun delete(context: Context) { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply() }
+    private const val ANDROID_KEYSTORE="AndroidKeyStore";private const val ALIAS="myration_openai_key";private const val PREFS="secure_ai_settings";private const val CIPHER_TEXT="api_key_cipher";private const val IV="api_key_iv"
+    private fun secretKey():SecretKey{val ks=KeyStore.getInstance(ANDROID_KEYSTORE).apply{load(null)};(ks.getKey(ALIAS,null) as? SecretKey)?.let{return it};val generator=KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,ANDROID_KEYSTORE);generator.init(KeyGenParameterSpec.Builder(ALIAS,KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build());return generator.generateKey()}
+    fun save(context:Context,value:String){val cipher=Cipher.getInstance("AES/GCM/NoPadding");cipher.init(Cipher.ENCRYPT_MODE,secretKey());val encrypted=cipher.doFinal(value.toByteArray());context.getSharedPreferences(PREFS,Context.MODE_PRIVATE).edit().putString(CIPHER_TEXT,Base64.encodeToString(encrypted,Base64.NO_WRAP)).putString(IV,Base64.encodeToString(cipher.iv,Base64.NO_WRAP)).apply()}
+    fun load(context:Context):String?=runCatching{val p=context.getSharedPreferences(PREFS,Context.MODE_PRIVATE);val enc=p.getString(CIPHER_TEXT,null)?:return null;val iv=p.getString(IV,null)?:return null;val cipher=Cipher.getInstance("AES/GCM/NoPadding");cipher.init(Cipher.DECRYPT_MODE,secretKey(),GCMParameterSpec(128,Base64.decode(iv,Base64.NO_WRAP)));String(cipher.doFinal(Base64.decode(enc,Base64.NO_WRAP)))}.getOrNull()
+    fun hasKey(context:Context)=!load(context).isNullOrBlank();fun delete(context:Context){context.getSharedPreferences(PREFS,Context.MODE_PRIVATE).edit().clear().apply()}
 }
