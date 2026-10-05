@@ -1,0 +1,3 @@
+# API key is no longer stored here.
+# In v0.3, install the app and open "Настройки AI" to enter the key on the phone.
+# Android Studio may still create local.properties automatically for sdk.dir.
