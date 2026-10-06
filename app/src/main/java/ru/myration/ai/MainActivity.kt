@@ -14,15 +14,22 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
@@ -40,15 +47,24 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
+private val Sage = Color(0xFF55745B)
+private val SoftSage = Color(0xFFE8EFE8)
+private val AppBg = Color(0xFFF6F7F3)
+private val Ink = Color(0xFF20231F)
+private val Muted = Color(0xFF6C716B)
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme(colorScheme = lightColorScheme()) { App() } }
+        setContent {
+            MaterialTheme(colorScheme = lightColorScheme(primary = Sage, background = AppBg, surface = Color.White)) {
+                App()
+            }
+        }
     }
 }
 
 enum class ScanMode(val title: String) { FOOD("Еда"), FRIDGE("Холодильник") }
-enum class Goal(val title: String) { LOSE("Снизить вес"), MAINTAIN("Поддерживать"), GAIN("Набрать вес") }
 data class DetectedItem(val name: String, val grams: Int?, val calories: Int?, val protein: Int?, val fat: Int?, val carbs: Int?, val confidence: Double?)
 data class DiaryEntry(val title: String, val calories: Int, val protein: Int, val fat: Int, val carbs: Int)
 
@@ -59,7 +75,7 @@ fun App() {
     val scope = rememberCoroutineScope()
     var tab by remember { mutableIntStateOf(0) }
     var mode by remember { mutableStateOf(ScanMode.FOOD) }
-    var status by remember { mutableStateOf("Сфотографируй еду — AI поможет оценить состав и КБЖУ") }
+    var status by remember { mutableStateOf("Сфотографируй еду — AI поможет сделать черновую оценку состава") }
     var loading by remember { mutableStateOf(false) }
     var detectedItems by remember { mutableStateOf<List<DetectedItem>>(emptyList()) }
     var rawNote by remember { mutableStateOf("") }
@@ -67,16 +83,14 @@ fun App() {
     var showSettings by remember { mutableStateOf(false) }
     var apiKeyDraft by remember { mutableStateOf("") }
     var keySaved by remember { mutableStateOf(SecureKeyStore.hasKey(context)) }
-    var goal by remember { mutableStateOf(Goal.MAINTAIN) }
-    var dailyTarget by remember { mutableIntStateOf(2000) }
     var diary by remember { mutableStateOf<List<DiaryEntry>>(emptyList()) }
 
     fun analyze(uri: Uri) {
         val apiKey = SecureKeyStore.load(context)
         if (apiKey.isNullOrBlank()) {
-            status = "Сначала добавь API-ключ в настройках AI."
+            status = "Сначала добавь API-ключ в профиле."
             showSettings = true
-            tab = 2
+            tab = 3
             return
         }
         loading = true
@@ -88,7 +102,7 @@ fun App() {
                 .onSuccess { result ->
                     detectedItems = result.first
                     rawNote = result.second
-                    status = "Готово. Проверь продукты и порции перед добавлением."
+                    status = "Готово. Проверь продукты и порции перед сохранением."
                 }
                 .onFailure { error -> status = "Ошибка: ${error.message ?: "неизвестная ошибка"}" }
             loading = false
@@ -103,62 +117,138 @@ fun App() {
             camera.launch(cameraUri!!)
         } else status = "Без камеры можно выбрать фото из галереи."
     }
+    val launchCamera = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            cameraUri = createTempImageUri(context)
+            camera.launch(cameraUri!!)
+        } else permission.launch(Manifest.permission.CAMERA)
+    }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Мой рацион AI") }, actions = { IconButton(onClick = { tab = 2; showSettings = true }) { Icon(Icons.Default.Settings, "Настройки") } }) },
+        containerColor = AppBg,
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Icon(Icons.Default.Home, null) }, label = { Text("Сегодня") })
-                NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, icon = { Icon(Icons.Default.CameraAlt, null) }, label = { Text("AI-скан") })
-                NavigationBarItem(selected = tab == 2, onClick = { tab = 2 }, icon = { Icon(Icons.Default.Person, null) }, label = { Text("Профиль") })
+            NavigationBar(containerColor = Color.White) {
+                NavigationBarItem(tab == 0, { tab = 0 }, { Icon(Icons.Default.Home, null) }, label = { Text("Сегодня") })
+                NavigationBarItem(tab == 1, { tab = 1 }, { Icon(Icons.Default.CameraAlt, null) }, label = { Text("Скан") })
+                NavigationBarItem(tab == 2, { tab = 2 }, { Icon(Icons.Default.MenuBook, null) }, label = { Text("Дневник") })
+                NavigationBarItem(tab == 3, { tab = 3 }, { Icon(Icons.Default.Person, null) }, label = { Text("Профиль") })
             }
         }
     ) { pad ->
         when (tab) {
-            0 -> {
-                val eaten = diary.sumOf { entry -> entry.calories }
-                LazyColumn(Modifier.padding(pad).padding(16.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    item { Text("Сегодня", style = MaterialTheme.typography.headlineMedium); Text("Цель: ${goal.title}") }
-                    item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp)) { Text("$eaten / $dailyTarget ккал", style = MaterialTheme.typography.headlineSmall); LinearProgressIndicator(progress = { (eaten.toFloat() / dailyTarget).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth()); Text("Осталось примерно ${(dailyTarget - eaten).coerceAtLeast(0)} ккал") } } }
-                    item { Button(onClick = { tab = 1 }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("Распознать еду по фото") } }
-                    item { Text("Дневник", style = MaterialTheme.typography.titleLarge) }
-                    if (diary.isEmpty()) item { Text("Пока пусто. Добавь первый приём пищи через AI-скан.") }
-                    items(diary) { entry -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) { Text(entry.title, style = MaterialTheme.typography.titleMedium); Text("${entry.calories} ккал · Б ${entry.protein} · Ж ${entry.fat} · У ${entry.carbs} г") } } }
-                }
+            0 -> TodayScreen(pad, diary, onScan = { tab = 1 }, onDiary = { tab = 2 })
+            1 -> ScanScreen(pad, mode, { mode = it }, loading, status, detectedItems, rawNote, launchCamera, { gallery.launch("image/*") }) {
+                val calories = detectedItems.sumOf { it.calories ?: 0 }
+                val protein = detectedItems.sumOf { it.protein ?: 0 }
+                val fat = detectedItems.sumOf { it.fat ?: 0 }
+                val carbs = detectedItems.sumOf { it.carbs ?: 0 }
+                val title = detectedItems.joinToString(", ") { it.name }.take(70)
+                diary = diary + DiaryEntry(title, calories, protein, fat, carbs)
+                status = "Добавлено в дневник"
+                tab = 0
             }
-            1 -> LazyColumn(Modifier.padding(pad).padding(16.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                item { Text("AI-распознавание", style = MaterialTheme.typography.headlineSmall); Text("Фото помогает оценить продукты, порцию и КБЖУ. Все значения приблизительные.") }
-                item { SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) { ScanMode.entries.forEachIndexed { index, scanMode -> SegmentedButton(selected = mode == scanMode, onClick = { mode = scanMode }, shape = SegmentedButtonDefaults.itemShape(index, ScanMode.entries.size)) { Text(scanMode.title) } } } }
-                item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) { cameraUri = createTempImageUri(context); camera.launch(cameraUri!!) } else permission.launch(Manifest.permission.CAMERA) }, modifier = Modifier.weight(1f)) { Icon(Icons.Default.CameraAlt, null); Spacer(Modifier.width(6.dp)); Text("Камера") }
-                    OutlinedButton(onClick = { gallery.launch("image/*") }, modifier = Modifier.weight(1f)) { Icon(Icons.Default.Image, null); Spacer(Modifier.width(6.dp)); Text("Галерея") }
-                } }
-                item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { if (loading) LinearProgressIndicator(Modifier.fillMaxWidth()); Text(status) } } }
-                items(detectedItems) { detected -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) { Text(detected.name, style = MaterialTheme.typography.titleMedium); val details = mutableListOf<String>(); detected.grams?.let { grams -> details.add("~$grams г") }; detected.calories?.let { calories -> details.add("$calories ккал") }; detected.confidence?.let { confidence -> details.add("уверенность ${(confidence * 100).toInt()}%") }; Text(details.joinToString(" · ")); if (detected.calories != null) Text("Б ${detected.protein ?: 0} · Ж ${detected.fat ?: 0} · У ${detected.carbs ?: 0} г") } } }
-                if (detectedItems.isNotEmpty() && mode == ScanMode.FOOD) item {
-                    Button(onClick = {
-                        val calories = detectedItems.sumOf { detected -> detected.calories ?: 0 }
-                        val protein = detectedItems.sumOf { detected -> detected.protein ?: 0 }
-                        val fat = detectedItems.sumOf { detected -> detected.fat ?: 0 }
-                        val carbs = detectedItems.sumOf { detected -> detected.carbs ?: 0 }
-                        val title = detectedItems.joinToString(", ") { detected -> detected.name }.take(60)
-                        diary = diary + DiaryEntry(title, calories, protein, fat, carbs)
-                        status = "Добавлено в дневник"
-                        tab = 0
-                    }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("Добавить в дневник") }
+            2 -> DiaryScreen(pad, diary) { tab = 1 }
+            else -> ProfileScreen(pad, keySaved, showSettings, { showSettings = !showSettings }, apiKeyDraft, { apiKeyDraft = it.trim() }, onSave = {
+                if (apiKeyDraft.isNotBlank()) {
+                    SecureKeyStore.save(context, apiKeyDraft); apiKeyDraft = ""; keySaved = true; showSettings = false
                 }
-                if (rawNote.isNotBlank()) item { Text(rawNote, style = MaterialTheme.typography.bodySmall) }
-            }
-            else -> LazyColumn(Modifier.padding(pad).padding(16.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                item { Text("Цель и настройки", style = MaterialTheme.typography.headlineSmall) }
-                item { Text("Выбери цель. Ориентир калорий можно менять вручную.") }
-                item { Column { Goal.entries.forEach { choice -> FilterChip(selected = goal == choice, onClick = { goal = choice; dailyTarget = when (choice) { Goal.LOSE -> 1800; Goal.MAINTAIN -> 2000; Goal.GAIN -> 2200 } }, label = { Text(choice.title) }); Spacer(Modifier.height(6.dp)) } } }
-                item { OutlinedTextField(value = dailyTarget.toString(), onValueChange = { text -> text.toIntOrNull()?.let { value -> dailyTarget = value.coerceIn(1200, 4000) } }, label = { Text("Дневной ориентир, ккал") }, modifier = Modifier.fillMaxWidth()) }
-                item { OutlinedButton(onClick = { showSettings = !showSettings }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Key, null); Spacer(Modifier.width(8.dp)); Text("Настройки AI · ${if (keySaved) "ключ сохранён" else "ключ не задан"}") } }
-                if (showSettings) item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { Text("OpenAI API key", style = MaterialTheme.typography.titleMedium); OutlinedTextField(value = apiKeyDraft, onValueChange = { text -> apiKeyDraft = text.trim() }, label = { Text("Вставь API-ключ") }, singleLine = true, modifier = Modifier.fillMaxWidth()); Text("Ключ шифруется Android Keystore и остаётся на телефоне.", style = MaterialTheme.typography.bodySmall); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Button(onClick = { if (apiKeyDraft.isNotBlank()) { SecureKeyStore.save(context, apiKeyDraft); apiKeyDraft = ""; keySaved = true; showSettings = false } }, enabled = apiKeyDraft.isNotBlank()) { Text("Сохранить") }; OutlinedButton(onClick = { SecureKeyStore.delete(context); keySaved = false; apiKeyDraft = "" }) { Text("Удалить") } } } } }
-                item { Text("Важно: распознавание еды и расчёт порций приблизительные. Для медицинских целей приложение не предназначено.", style = MaterialTheme.typography.bodySmall) }
+            }, onDelete = { SecureKeyStore.delete(context); keySaved = false; apiKeyDraft = "" })
+        }
+    }
+}
+
+@Composable
+private fun PageHeader(eyebrow: String, title: String) {
+    Text("Мой рацион AI", fontSize = 25.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
+    Spacer(Modifier.height(20.dp))
+    Text(eyebrow, fontSize = 13.sp, color = Muted)
+    Text(title, fontSize = 28.sp, lineHeight = 32.sp, fontWeight = FontWeight.Bold, color = Ink)
+}
+
+@Composable
+private fun SoftCard(content: @Composable ColumnScope.() -> Unit) {
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Column(Modifier.padding(18.dp), content = content)
+    }
+}
+
+@Composable
+private fun MacroRow(label: String, value: Int, total: Int) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, color = Ink); Text("$value г", fontWeight = FontWeight.Bold)
+    }
+    LinearProgressIndicator(progress = { (value.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().height(7.dp), color = Sage, trackColor = Color(0xFFEDEFEB))
+}
+
+@Composable
+private fun TodayScreen(pad: PaddingValues, diary: List<DiaryEntry>, onScan: () -> Unit, onDiary: () -> Unit) {
+    val p = diary.sumOf { it.protein }; val f = diary.sumOf { it.fat }; val c = diary.sumOf { it.carbs }
+    LazyColumn(Modifier.padding(pad).fillMaxSize().padding(horizontal = 16.dp), contentPadding = PaddingValues(top = 22.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { PageHeader("Сегодня", "Питание без лишней рутины") }
+        item {
+            SoftCard {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column { Text("Баланс дня", fontSize = 18.sp, fontWeight = FontWeight.Bold); Text("Ориентир, а не строгий лимит", fontSize = 13.sp, color = Muted) }
+                    Surface(shape = RoundedCornerShape(14.dp), color = SoftSage) { Text("Хороший ритм", Modifier.padding(horizontal = 10.dp, vertical = 6.dp), fontSize = 12.sp, color = Sage) }
+                }
+                Spacer(Modifier.height(18.dp)); MacroRow("Белки", p, 100); Spacer(Modifier.height(10.dp)); MacroRow("Жиры", f, 80); Spacer(Modifier.height(10.dp)); MacroRow("Углеводы", c, 240)
             }
         }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = onScan, modifier = Modifier.weight(1f).height(58.dp), shape = RoundedCornerShape(18.dp)) { Icon(Icons.Default.CameraAlt, null); Spacer(Modifier.width(6.dp)); Text("Скан еды") }
+                FilledTonalButton(onClick = onDiary, modifier = Modifier.weight(1f).height(58.dp), shape = RoundedCornerShape(18.dp)) { Icon(Icons.Default.MenuBook, null); Spacer(Modifier.width(6.dp)); Text("Дневник") }
+            }
+        }
+        item { Surface(shape = RoundedCornerShape(18.dp), color = Color(0xFFF0F4ED)) { Column(Modifier.padding(15.dp)) { Text("AI-подсказка", fontWeight = FontWeight.Bold); Text("Фото — быстрый черновик. Перед сохранением проверь продукт и размер порции.", color = Color(0xFF455445)) } } }
+        item { Text("Сегодняшний дневник", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
+        if (diary.isEmpty()) item { SoftCard { Text("Пока записей нет"); Text("Добавь первый приём пищи через AI-скан.", color = Muted, fontSize = 13.sp) } }
+        items(diary.takeLast(3).reversed()) { entry ->
+            SoftCard { Row(verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(58.dp).background(SoftSage, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Restaurant, null, tint = Sage) }; Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(entry.title, fontWeight = FontWeight.Bold); Text("Б ${entry.protein} · Ж ${entry.fat} · У ${entry.carbs} г", fontSize = 13.sp, color = Muted) } } }
+        }
+    }
+}
+
+@Composable
+private fun ScanScreen(pad: PaddingValues, mode: ScanMode, onMode: (ScanMode) -> Unit, loading: Boolean, status: String, detected: List<DetectedItem>, note: String, onCamera: () -> Unit, onGallery: () -> Unit, onAdd: () -> Unit) {
+    LazyColumn(Modifier.padding(pad).fillMaxSize().padding(horizontal = 16.dp), contentPadding = PaddingValues(top = 22.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { PageHeader("AI-скан", if (mode == ScanMode.FOOD) "Что у тебя на тарелке?" else "Что есть в холодильнике?") }
+        item { SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) { ScanMode.entries.forEachIndexed { index, item -> SegmentedButton(selected = mode == item, onClick = { onMode(item) }, shape = SegmentedButtonDefaults.itemShape(index, ScanMode.entries.size)) { Text(item.title) } } } }
+        item {
+            Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFEDF4EC))) {
+                Column(Modifier.padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Фото помогает быстро начать", fontSize = 20.sp, fontWeight = FontWeight.Bold); Text("Результат можно проверить перед сохранением", color = Muted, fontSize = 13.sp)
+                    Box(Modifier.fillMaxWidth().height(170.dp).padding(vertical = 14.dp).background(Color.White.copy(alpha = .65f), RoundedCornerShape(20.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Default.PhotoCamera, null, modifier = Modifier.size(54.dp), tint = Sage) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { Button(onClick = onCamera, modifier = Modifier.weight(1f), shape = RoundedCornerShape(18.dp)) { Text("Камера") }; FilledTonalButton(onClick = onGallery, modifier = Modifier.weight(1f), shape = RoundedCornerShape(18.dp)) { Text("Галерея") } }
+                }
+            }
+        }
+        item { SoftCard { if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth()); Text(status, color = if (loading) Sage else Ink) } }
+        if (detected.isNotEmpty()) item { Text("После распознавания", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+        items(detected) { item -> SoftCard { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(item.name, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f)); Icon(Icons.Default.Edit, null, tint = Sage) }; val bits = mutableListOf<String>(); item.grams?.let { bits.add("≈ $it г") }; item.confidence?.let { bits.add("AI уверен на ${(it * 100).toInt()}%") }; Text(bits.joinToString(" · "), color = Muted, fontSize = 13.sp); if (item.calories != null) Text("${item.calories} ккал · Б ${item.protein ?: 0} · Ж ${item.fat ?: 0} · У ${item.carbs ?: 0}") } }
+        if (detected.isNotEmpty() && mode == ScanMode.FOOD) item { Button(onClick = onAdd, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(18.dp)) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("Добавить в дневник") } }
+        if (note.isNotBlank()) item { Text(note, color = Muted, fontSize = 13.sp) }
+        if (mode == ScanMode.FRIDGE) item { SoftCard { Text("Идеи из холодильника", fontWeight = FontWeight.Bold); Text("AI учитывает только то, что видно на фото, и не выдумывает содержимое закрытых упаковок.", color = Muted, fontSize = 13.sp) } }
+    }
+}
+
+@Composable
+private fun DiaryScreen(pad: PaddingValues, diary: List<DiaryEntry>, onScan: () -> Unit) {
+    LazyColumn(Modifier.padding(pad).fillMaxSize().padding(horizontal = 16.dp), contentPadding = PaddingValues(top = 22.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { PageHeader("Дневник", "Всё за день в одном месте") }
+        if (diary.isEmpty()) item { SoftCard { Text("Дневник пока пуст", fontWeight = FontWeight.Bold); Text("Сканируй еду, проверь результат и добавь запись.", color = Muted); Spacer(Modifier.height(12.dp)); Button(onClick = onScan) { Text("Открыть скан") } } }
+        items(diary.reversed()) { entry -> SoftCard { Text(entry.title, fontWeight = FontWeight.Bold); Text("${entry.calories} ккал", color = Muted); Text("Б ${entry.protein} · Ж ${entry.fat} · У ${entry.carbs} г") } }
+    }
+}
+
+@Composable
+private fun ProfileScreen(pad: PaddingValues, keySaved: Boolean, showSettings: Boolean, toggle: () -> Unit, key: String, onKey: (String) -> Unit, onSave: () -> Unit, onDelete: () -> Unit) {
+    LazyColumn(Modifier.padding(pad).fillMaxSize().padding(horizontal = 16.dp), contentPadding = PaddingValues(top = 22.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { PageHeader("Профиль", "Настройки приложения") }
+        item { SoftCard { Row(verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(48.dp).background(SoftSage, CircleShape), contentAlignment = Alignment.Center) { Icon(Icons.Default.Person, null, tint = Sage) }; Spacer(Modifier.width(12.dp)); Column { Text("Мой рацион", fontWeight = FontWeight.Bold); Text("Фокус на привычках и удобном дневнике", color = Muted, fontSize = 13.sp) } } } }
+        item { OutlinedButton(onClick = toggle, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) { Icon(Icons.Default.Key, null); Spacer(Modifier.width(8.dp)); Text("AI · ${if (keySaved) "ключ сохранён" else "ключ не задан"}") } }
+        if (showSettings) item { SoftCard { Text("OpenAI API key", fontWeight = FontWeight.Bold); Spacer(Modifier.height(8.dp)); OutlinedTextField(value = key, onValueChange = onKey, label = { Text("API-ключ") }, singleLine = true, modifier = Modifier.fillMaxWidth()); Text("Ключ шифруется Android Keystore и остаётся на телефоне.", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(10.dp)); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Button(onClick = onSave, enabled = key.isNotBlank()) { Text("Сохранить") }; OutlinedButton(onClick = onDelete) { Text("Удалить") } } } }
+        item { Text("Распознавание еды и размеры порций приблизительные. Приложение не оценивает внешность и не заменяет медицинские рекомендации.", color = Muted, fontSize = 13.sp) }
     }
 }
 
